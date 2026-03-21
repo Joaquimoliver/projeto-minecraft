@@ -1,6 +1,10 @@
 """
-world.py — Geração com NEIGHBOR CULLING para máxima performance.
-Novidades: save() e load() para persistência em JSON.
+world.py — Geração otimizada para 60 FPS.
+Melhorias:
+  - Mundo menor (20x20) com VIEW_RADIUS de 10 blocos
+  - Menos árvores (TREE_CHANCE reduzido)
+  - Culling por distância: esconde blocos longe do jogador
+  - Chunks: apenas blocos dentro do raio são entidades ativas
 """
 
 import json
@@ -11,14 +15,14 @@ import random
 from ursina import *
 from block import Block, BLOCK_TYPES
 
-WORLD_WIDTH = 24
-WORLD_DEPTH = 24
-BASE_HEIGHT = 4
-MAX_HEIGHT  = 9
-TREE_CHANCE = 0.04
+WORLD_WIDTH  = 20
+WORLD_DEPTH  = 20
+BASE_HEIGHT  = 4
+MAX_HEIGHT   = 9
+TREE_CHANCE  = 0.025          # menos árvores = menos entidades
+VIEW_RADIUS  = 10             # raio em blocos para mostrar entidades
 
 FACE_DIRS = [(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]
-
 SAVE_FILE = 'savegame.json'
 
 
@@ -46,12 +50,11 @@ class World:
         self._oz    = depth  // 2
         print(f"[World] Seed: {self.seed} | Tamanho: {width}x{depth}")
 
-    # ——— Altura do terreno ————————————————————————————————————————————————
     def _get_height(self, x, z):
         n = smooth_noise(x, z, self.seed)
         return max(BASE_HEIGHT, min(int(n * (MAX_HEIGHT - BASE_HEIGHT)) + BASE_HEIGHT, MAX_HEIGHT))
 
-    # ——— GERAÇÃO ——————————————————————————————————————————————————————————
+    # ── Geração ───────────────────────────────────────────────────────────
     def generate(self):
         print("[World] Planejando terreno...")
         self._plan = {}
@@ -90,8 +93,7 @@ class World:
                 self.blocks[pos] = block
                 created += 1
 
-        print(f"[World] Entidades criadas (visíveis): {created}  |  "
-              f"Culled (ocultos): {len(self._plan) - created}")
+        print(f"[World] Entidades criadas: {created}")
 
     def _is_exposed(self, pos):
         x, y, z = pos
@@ -115,7 +117,20 @@ class World:
                         if pos not in self._plan:
                             self._plan[pos] = 'leaves'
 
-    # ——— MODIFICAÇÃO EM TEMPO REAL ————————————————————————————————————————
+    # ── Culling por distância ─────────────────────────────────────────────
+    def update_visibility(self, player_pos):
+        """
+        Ativa/desativa entidades baseado na distância XZ do jogador.
+        Chamado a cada N frames no main.py para não sobrecarregar o update.
+        """
+        px, _, pz = player_pos
+        r2 = VIEW_RADIUS * VIEW_RADIUS
+        for pos, block in self.blocks.items():
+            dx = pos[0] - px
+            dz = pos[2] - pz
+            block.enabled = (dx*dx + dz*dz) <= r2
+
+    # ── Modificação ───────────────────────────────────────────────────────
     def add_block(self, position, block_type='grass'):
         pos = (int(position[0]), int(position[1]), int(position[2]))
         if pos in self.blocks or pos in self._plan:
@@ -144,29 +159,23 @@ class World:
                 block = Block(position=npos, block_type=self._plan[npos])
                 self.blocks[npos] = block
 
-    # ——— SAVE / LOAD ——————————————————————————————————————————————————————
+    # ── Save / Load ───────────────────────────────────────────────────────
     def save(self, filename=SAVE_FILE):
-        """Serializa o mapa lógico completo (_plan) em JSON."""
         data = {
             'seed':  self.seed,
             'width': self.width,
             'depth': self.depth,
-            # chave "x,y,z" → tipo do bloco
-            'plan':  {f"{x},{y},{z}": btype for (x, y, z), btype in self._plan.items()},
+            'plan':  {f"{x},{y},{z}": btype for (x,y,z), btype in self._plan.items()},
         }
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, separators=(',', ':'))
         size_kb = os.path.getsize(filename) / 1024
-        print(f"[World] Salvo em '{filename}'  ({size_kb:.1f} KB, "
-              f"{len(self._plan)} blocos)")
+        print(f"[World] Salvo em '{filename}'  ({size_kb:.1f} KB)")
 
     def load(self, filename=SAVE_FILE):
-        """Carrega o mundo a partir de um JSON gerado por save()."""
         if not os.path.exists(filename):
-            print(f"[World] Arquivo '{filename}' não encontrado.")
+            print(f"[World] '{filename}' nao encontrado.")
             return False
-
-        # Destroi todas as entidades atuais
         for block in self.blocks.values():
             destroy(block)
         self.blocks.clear()
@@ -183,7 +192,7 @@ class World:
 
         for key, btype in data['plan'].items():
             x, y, z = map(int, key.split(','))
-            self._plan[(x, y, z)] = btype
+            self._plan[(x,y,z)] = btype
 
         created = 0
         for pos, btype in self._plan.items():
@@ -192,11 +201,9 @@ class World:
                 self.blocks[pos] = block
                 created += 1
 
-        print(f"[World] Carregado de '{filename}'  |  "
-              f"{len(self._plan)} blocos planejados  |  {created} entidades")
+        print(f"[World] Carregado | {created} entidades")
         return True
 
-    # ——— UTILITÁRIOS ——————————————————————————————————————————————————————
     def get_block(self, position):
         pos = (int(position[0]), int(position[1]), int(position[2]))
         return self.blocks.get(pos)
