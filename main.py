@@ -1,86 +1,79 @@
 """
-main.py — PyMinecraft 3D | Otimizado para 60 FPS
-Otimizações:
-  - Culling por distância a cada 10 frames
-  - Raycast só quando necessário
-  - Sombra ambiente removida (custo de render)
-  - Fog reduzido para esconder bordas do culling
+main.py — PyMinecraft 3D | Ursina 8.x | Mesh Merging v3
 """
 
 from ursina import *
-from ursina.prefabs.first_person_controller import FirstPersonController
+from panda3d.core import RenderModeAttrib
 from block  import BLOCK_TYPES
-from world  import World
+from world  import World, CHUNK_SIZE, RENDER_DISTANCE
 from player import Player
 
 # =============================================================================
-# APP
-# =============================================================================
 app = Ursina(
     title='PyMinecraft 3D',
-    borderless=False,
-    fullscreen=False,
-    development_mode=False,
-    vsync=True,
+    borderless=False, fullscreen=False,
+    development_mode=False, vsync=True,
 )
-
 window.fps_counter.enabled = True
 window.exit_button.visible = False
 
-# ── Céu ───────────────────────────────────────────────────────────────────────
-SKY_COLOR = color.Color(0.53, 0.81, 0.92, 1)
-camera.background = SKY_COLOR
+SKY = color.Color(0.53, 0.81, 0.92, 1)
+camera.background = SKY
+Entity(model='sphere', scale=300, color=SKY, double_sided=True, unlit=True)
 
-Entity(model='sphere', scale=300, color=SKY_COLOR, double_sided=True, unlit=True)
+sun = DirectionalLight(); sun.look_at(Vec3(1, -2, 0.5))
+amb = AmbientLight(); amb.color = color.Color(0.5, 0.52, 0.55, 1)
 
-# ── Iluminação mínima (menos custo de render) ─────────────────────────────────
-sun = DirectionalLight()
-sun.look_at(Vec3(1, -2, 0.5))
+scene.fog_color   = SKY
+scene.fog_density = 0.018
 
-# SEM AmbientLight separado — o DirectionalLight já ilumina o suficiente
-
-# ── Fog curto para esconder borda do culling ───────────────────────────────────
-scene.fog_color   = SKY_COLOR
-scene.fog_density = 0.035     # mais denso = esconde mais longe = mais FPS
-
-# =============================================================================
-# MUNDO E JOGADOR
 # =============================================================================
 world  = World(seed=None)
-world.generate()
-
-spawn_y = world.spawn_height()
-player  = Player(spawn_position=Vec3(0, spawn_y, 0))
+world.initial_load()
+player = Player(spawn_position=Vec3(0, world.spawn_height(), 0))
 
 # =============================================================================
-# HIGHLIGHT DE BLOCO (sem entidade auxiliar)
+# OUTLINE
 # =============================================================================
 REACH = 7
-_highlighted = None
 
-def _apply_highlight(block):
-    block.color = color.Color(1.3, 1.3, 1.3, 1) if block.texture else color.Color(
-        min(block._base_color.r+0.25,1),
-        min(block._base_color.g+0.25,1),
-        min(block._base_color.b+0.25,1), 1)
+block_outline = Entity(
+    model='cube', color=color.black, scale=1.005,
+    enabled=False, unlit=True,
+)
+block_outline.setAttrib(RenderModeAttrib.make(RenderModeAttrib.MWireframe, 2.0))
 
-def _clear_highlight(block):
-    block.color = color.white if block.texture else block._base_color
+def _ray():
+    return raycast(
+        origin=camera.world_position, direction=camera.forward,
+        distance=REACH, ignore=[player], traverse_target=scene,
+    )
 
-def _update_highlight():
-    global _highlighted
+def _hit_block(hit):
+    """Bloco atingido pelo ray em um chunk mesh."""
+    p, n = hit.world_point, hit.normal
+    return (int(round(p.x - n.x*0.5)),
+            int(round(p.y - n.y*0.5)),
+            int(round(p.z - n.z*0.5)))
+
+def _hit_place(hit):
+    """Posição adjacente ao bloco atingido (para colocar)."""
+    bx, by, bz = _hit_block(hit)
+    n = hit.normal
+    return (bx + int(round(n.x)),
+            by + int(round(n.y)),
+            bz + int(round(n.z)))
+
+def _update_outline():
     if not mouse.locked:
-        if _highlighted:
-            _clear_highlight(_highlighted)
-            _highlighted = None
+        block_outline.enabled = False
         return
-    hit = raycast(camera.world_position, camera.forward, distance=REACH,
-                  ignore=[player], traverse_target=scene)
-    target = hit.entity if (hit.hit and hasattr(hit.entity, 'block_type')) else None
-    if target is not _highlighted:
-        if _highlighted: _clear_highlight(_highlighted)
-        if target:       _apply_highlight(target)
-        _highlighted = target
+    hit = _ray()
+    if hit.hit and getattr(hit.entity, 'is_chunk', False):
+        block_outline.position = Vec3(*_hit_block(hit))
+        block_outline.enabled  = True
+    else:
+        block_outline.enabled = False
 
 # =============================================================================
 # HUD
@@ -89,33 +82,32 @@ info_text = Text(
     text='', origin=(-0.5, 0.5), position=(-0.87, 0.48),
     scale=0.85, color=color.white, background=True, parent=camera.ui,
 )
-feedback_text = Text(
-    text='', origin=(0,0), position=(0, 0.35), scale=1.4,
-    color=color.lime, parent=camera.ui, enabled=False,
+fb_text = Text(
+    text='', origin=(0,0), position=(0, 0.35),
+    scale=1.4, color=color.lime, parent=camera.ui, enabled=False,
 )
-_feedback_timer = 0
+_fb = 0
 
 def _show_feedback(msg, col=color.lime):
-    global _feedback_timer
-    feedback_text.text    = msg
-    feedback_text.color   = col
-    feedback_text.enabled = True
-    _feedback_timer = 2.5
+    global _fb
+    fb_text.text = msg; fb_text.color = col
+    fb_text.enabled = True; _fb = 2.5
 
 def _update_feedback():
-    global _feedback_timer
-    if _feedback_timer > 0:
-        _feedback_timer -= time.dt
-        if _feedback_timer <= 0:
-            feedback_text.enabled = False
+    global _fb
+    if _fb > 0:
+        _fb -= time.dt
+        if _fb <= 0: fb_text.enabled = False
 
 def _update_info():
-    px, py, pz = (round(v,1) for v in player.position)
-    fps = round(1 / max(time.dt, 0.001))
+    px,py,pz = (round(v,1) for v in player.position)
+    cx,cz    = world.chunk_coords
+    fps      = round(1/max(time.dt, 0.001))
     info_text.text = (
-        f" Pos: ({px}, {py}, {pz})\n"
+        f" Pos: ({px},{py},{pz})\n"
+        f" Chunk: ({cx},{cz}) | Fila: {len(world._load_queue)}\n"
         f" Bloco: {BLOCK_TYPES[player.selected_block]['name']}\n"
-        f" Entidades: {sum(1 for b in world.blocks.values() if b.enabled)}/{len(world.blocks)}\n"
+        f" Meshes: {world.entity_count} | Blocos: {world.block_count}\n"
         f" FPS: {fps}\n"
         f" F5: Salvar  |  F6: Carregar"
     )
@@ -124,63 +116,48 @@ def _update_info():
 # INTERAÇÃO
 # =============================================================================
 def _break_block():
-    hit = raycast(camera.world_position, camera.forward, distance=REACH,
-                  ignore=[player], traverse_target=scene)
-    if hit.hit and hasattr(hit.entity, 'block_type'):
-        world.remove_block(hit.entity.position)
+    hit = _ray()
+    if hit.hit and getattr(hit.entity, 'is_chunk', False):
+        world.remove_block(_hit_block(hit))
 
 def _place_block():
-    hit = raycast(camera.world_position, camera.forward, distance=REACH,
-                  ignore=[player], traverse_target=scene)
-    if hit.hit and hasattr(hit.entity, 'block_type'):
-        new_pos = hit.entity.position + hit.normal
-        new_pos = Vec3(round(new_pos.x), round(new_pos.y), round(new_pos.z))
-        if not player.is_too_close(new_pos):
-            world.add_block(new_pos, player.selected_block)
+    hit = _ray()
+    if hit.hit and getattr(hit.entity, 'is_chunk', False):
+        pp = _hit_place(hit)
+        if not (abs(pp[0]-player.x)<1.5 and
+                abs(pp[1]-player.y)<2.5 and
+                abs(pp[2]-player.z)<1.5):
+            world.add_block(pp, player.selected_block)
 
 # =============================================================================
-# CALLBACKS
-# =============================================================================
-_frame = 0
-_CULL_INTERVAL = 10      # atualiza visibilidade a cada N frames
-
 def input(key):
     if   key == 'left mouse button'  and mouse.locked: _break_block()
     elif key == 'right mouse button' and mouse.locked: _place_block()
     elif key == 'escape':  mouse.locked = not mouse.locked
     elif key == 'q':       application.quit()
     elif key == 'f5':
-        world.save()
-        _show_feedback('Mundo salvo! (F6 para carregar)', color.lime)
+        world.save(); _show_feedback('💾  Mundo salvo!', color.lime)
     elif key == 'f6':
         ok = world.load()
         if ok:
-            _show_feedback('Mundo carregado!', color.cyan)
             player.y = max(player.y, world.spawn_height())
+            _show_feedback('📂  Mundo carregado!', color.cyan)
         else:
-            _show_feedback('Nenhum save encontrado.', color.orange)
+            _show_feedback('⚠️  Nenhum save encontrado.', color.orange)
 
 def update():
-    global _frame
-    _frame += 1
-
     _update_info()
-    _update_highlight()
+    _update_outline()
     _update_feedback()
+    world.update_chunks(player.position)
 
-    # Culling por distância — não roda todo frame
-    if _frame % _CULL_INTERVAL == 0:
-        world.update_visibility(player.position)
-
-# =============================================================================
-# START
 # =============================================================================
 if __name__ == '__main__':
-    print("=" * 52)
-    print("  PyMinecraft 3D  |  60 FPS Edition")
-    print("  WASD: Mover  |  Espaco: Pular  |  Shift: Correr")
-    print("  1-7/Scroll: Bloco")
-    print("  LMB: Quebrar  |  RMB: Colocar  |  Q: Sair")
-    print("  F5: Salvar  |  F6: Carregar")
-    print("=" * 52)
+    area = (2*RENDER_DISTANCE+1) * CHUNK_SIZE
+    print("="*56)
+    print(f"  PyMinecraft 3D  |  Área visível: ~{area}x{area} blocos")
+    print("  WASD/Mouse | Espaço: Pular | Shift: Correr")
+    print("  LMB: Quebrar | RMB: Colocar | 1-7/Scroll: Bloco")
+    print("  Q: Sair | F5: Salvar | F6: Carregar")
+    print("="*56)
     app.run()
