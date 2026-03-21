@@ -1,17 +1,16 @@
 """
-main.py — PyMinecraft 3D  |  Ursina 8.x  |  Versão otimizada para 60 FPS
-Novidades: outline no bloco mirando | F5 salva | F6 carrega
+main.py — PyMinecraft 3D  |  Ursina 8.x  |  Versão otimizada
+Fix: outline preto removido — hover direto no bloco (sem artefato preto)
 """
 
 from ursina import *
-from panda3d.core import RenderModeAttrib
 from ursina.prefabs.first_person_controller import FirstPersonController
 from block  import BLOCK_TYPES
 from world  import World
 from player import Player
 
 # =============================================================================
-# APP — configurações de performance
+# APP
 # =============================================================================
 app = Ursina(
     title='PyMinecraft 3D',
@@ -23,9 +22,8 @@ app = Ursina(
 
 window.fps_counter.enabled = True
 window.exit_button.visible = False
-window.render_mode = 'default'
 
-# ——— CÉU ——————————————————————————————————————————————————————————————————
+# ── CÉU ───────────────────────────────────────────────────────────────────────
 camera.background = color.Color(0.53, 0.81, 0.92, 1)
 
 sky_dome = Entity(
@@ -36,14 +34,14 @@ sky_dome = Entity(
     unlit=True,
 )
 
-# ——— ILUMINAÇÃO —————————————————————————————————————————————————————————
+# ── ILUMINAÇÃO ────────────────────────────────────────────────────────────────
 sun = DirectionalLight()
 sun.look_at(Vec3(1, -2, 0.5))
 
 ambient = AmbientLight()
 ambient.color = color.Color(0.5, 0.52, 0.55, 1)
 
-# ——— FOG —————————————————————————————————————————————————————————————————
+# ── FOG ───────────────────────────────────────────────────────────────────────
 scene.fog_color   = color.Color(0.53, 0.81, 0.92, 1)
 scene.fog_density = 0.02
 
@@ -57,25 +55,21 @@ spawn_y = world.spawn_height()
 player  = Player(spawn_position=Vec3(0, spawn_y, 0))
 
 # =============================================================================
-# OUTLINE DO BLOCO MIRANDO
+# HIGHLIGHT DO BLOCO MIRANDO
+# Substituímos o wireframe (que causava o quadrado preto) por um
+# tingimento direto no bloco — sem entidade auxiliar, sem artefatos.
 # =============================================================================
-block_outline = Entity(
-    model='cube',
-    color=color.black,
-    scale=1.005,
-    enabled=False,
-    unlit=True,
-)
-# Wireframe via Panda3D (funciona em qualquer versão Ursina/Panda3D)
-block_outline.setAttrib(RenderModeAttrib.make(RenderModeAttrib.MWireframe, 2.0))
+REACH = 7
+_highlighted_block = None   # bloco atualmente destacado
 
-_last_outlined = None   # guarda a entidade que está sendo destacada
 
-def _update_outline():
-    global _last_outlined
+def _update_highlight():
+    global _highlighted_block
+
     if not mouse.locked:
-        block_outline.enabled = False
-        _last_outlined = None
+        if _highlighted_block:
+            _clear_highlight(_highlighted_block)
+            _highlighted_block = None
         return
 
     hit = raycast(
@@ -86,15 +80,31 @@ def _update_outline():
         traverse_target=scene,
     )
 
-    if hit.hit and hasattr(hit.entity, 'block_type'):
-        target = hit.entity
-        if target is not _last_outlined:
-            _last_outlined = target
-        block_outline.position = target.position
-        block_outline.enabled  = True
+    new_target = hit.entity if (hit.hit and hasattr(hit.entity, 'block_type')) else None
+
+    if new_target is not _highlighted_block:
+        # Remove destaque do bloco anterior
+        if _highlighted_block:
+            _clear_highlight(_highlighted_block)
+        # Aplica destaque no novo bloco
+        if new_target:
+            _apply_highlight(new_target)
+        _highlighted_block = new_target
+
+
+def _apply_highlight(block):
+    """Deixa o bloco levemente mais claro para indicar seleção."""
+    if block.texture:
+        block.color = color.Color(1.3, 1.3, 1.3, 1)
     else:
-        block_outline.enabled = False
-        _last_outlined = None
+        c = block._base_color
+        block.color = color.Color(min(c.r + 0.25, 1), min(c.g + 0.25, 1), min(c.b + 0.25, 1), 1)
+
+
+def _clear_highlight(block):
+    """Restaura a cor original do bloco."""
+    block.color = color.white if block.texture else block._base_color
+
 
 # =============================================================================
 # HUD INFO
@@ -109,7 +119,6 @@ info_text = Text(
     parent=camera.ui,
 )
 
-# Mensagem de feedback (save/load)
 feedback_text = Text(
     text='',
     origin=(0, 0),
@@ -121,12 +130,14 @@ feedback_text = Text(
 )
 _feedback_timer = 0
 
+
 def _show_feedback(msg, col=color.lime):
     global _feedback_timer
     feedback_text.text    = msg
     feedback_text.color   = col
     feedback_text.enabled = True
-    _feedback_timer = 2.5   # segundos que a mensagem fica visível
+    _feedback_timer = 2.5
+
 
 def _update_feedback():
     global _feedback_timer
@@ -134,6 +145,7 @@ def _update_feedback():
         _feedback_timer -= time.dt
         if _feedback_timer <= 0:
             feedback_text.enabled = False
+
 
 def _update_info():
     px, py, pz = (round(v, 1) for v in player.position)
@@ -148,11 +160,10 @@ def _update_info():
         f" F5: Salvar  |  F6: Carregar"
     )
 
+
 # =============================================================================
 # INTERAÇÃO — quebrar / colocar blocos
 # =============================================================================
-REACH = 7
-
 def _break_block():
     hit = raycast(
         origin=camera.world_position,
@@ -163,6 +174,7 @@ def _break_block():
     )
     if hit.hit and hasattr(hit.entity, 'block_type'):
         world.remove_block(hit.entity.position)
+
 
 def _place_block():
     hit = raycast(
@@ -178,6 +190,7 @@ def _place_block():
         if not player.is_too_close(new_pos):
             world.add_block(new_pos, player.selected_block)
 
+
 # =============================================================================
 # CALLBACKS
 # =============================================================================
@@ -190,7 +203,6 @@ def input(key):
         mouse.locked = not mouse.locked
     elif key == 'q':
         application.quit()
-    # ——— Save / Load ———————————————————————————————————————————————
     elif key == 'f5':
         world.save()
         _show_feedback('💾  Mundo salvo!  (F6 para carregar)', color.lime)
@@ -198,22 +210,23 @@ def input(key):
         ok = world.load()
         if ok:
             _show_feedback('📂  Mundo carregado!', color.cyan)
-            # Reposiciona o jogador em cima do spawn caso tenha caído
             player.y = max(player.y, world.spawn_height())
         else:
             _show_feedback('⚠️  Nenhum save encontrado.', color.orange)
 
+
 def update():
     _update_info()
-    _update_outline()
+    _update_highlight()
     _update_feedback()
+
 
 # =============================================================================
 # START
 # =============================================================================
 if __name__ == '__main__':
     print("=" * 52)
-    print("  PyMinecraft 3D  |  Versao otimizada 60 FPS")
+    print("  PyMinecraft 3D  |  Com texturas")
     print("  WASD: Mover  |  Mouse: Olhar  |  Espaco: Pular")
     print("  Shift: Correr  |  1-7/Scroll: Bloco")
     print("  LMB: Quebrar  |  RMB: Colocar  |  Q: Sair")
