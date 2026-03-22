@@ -1,6 +1,6 @@
 """
 texture_generator.py — Gera texturas procedurais PNG para blocos (32x32).
-Executa uma vez, depois usa cache. Leve e rápido!
+NOVO: Sem dependência de OBJ - usa modelo procedural em Python!
 """
 
 import os
@@ -29,8 +29,8 @@ BLOCK_COLORS = {
     'cobblestone': rgb(105, 105, 105),
 }
 
-def generate_grass_texture():
-    """Grama com manchinhas e variações."""
+def generate_grass_top_texture():
+    """Topo de grama (verde com manchinhas)."""
     img = Image.new('RGB', (TEXTURE_SIZE, TEXTURE_SIZE), BLOCK_COLORS['grass'])
     draw = ImageDraw.Draw(img, 'RGBA')
     
@@ -42,6 +42,14 @@ def generate_grass_texture():
         draw.rectangle([x, y, x+1, y+1], fill=(c, c+20, c, 100))
     
     return img
+
+def generate_grass_side_texture():
+    """Laterais de grama = terra (marrom)."""
+    return generate_dirt_texture()
+
+def generate_grass_texture():
+    """COMPATIBILIDADE: grama normal sem diferença de faces."""
+    return generate_grass_top_texture()
 
 def generate_dirt_texture():
     """Terra com textura nodosa."""
@@ -170,6 +178,24 @@ def generate_all_textures():
         print(f"  ✓ {block_type}.png (gerado)")
     
     print(f"[Texturas] Prontas em '{TEXTURES_DIR}/'")
+    
+    # Gerar texturas extras para grass_block (topo vs lateral)
+    generate_grass_block_textures()
+
+def generate_grass_block_textures():
+    """Gera texturas separadas para grass block (topo + lateral)."""
+    ensure_textures_dir()
+    
+    # Salvar texturas separadas
+    grass_top_path = os.path.join(TEXTURES_DIR, 'grass_top.png')
+    if not os.path.exists(grass_top_path):
+        generate_grass_top_texture().save(grass_top_path, 'PNG')
+        print(f"  ✓ grass_top.png (topo verde)")
+    
+    grass_side_path = os.path.join(TEXTURES_DIR, 'grass_side.png')
+    if not os.path.exists(grass_side_path):
+        generate_grass_side_texture().save(grass_side_path, 'PNG')
+        print(f"  ✓ grass_side.png (lateral marrom)")
 
 if __name__ == '__main__':
     print("[Texturas] Gerando texturas procedurais...")
